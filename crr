@@ -52,7 +52,7 @@ if [ -z "$SESSION_ID" ]; then
 fi
 
 # Extract options (exclude 'claude', '--resume', '--session-id' and their values)
-CURRENT_OPTS=$(echo "$CLAUDE_ARGS" | sed 's/^claude //' | sed -E 's/--resume[[:space:]]+[a-f0-9-]+//g' | sed -E 's/--session-id[[:space:]]+[a-f0-9-]+//g' | xargs)
+CURRENT_OPTS=$(echo "$CLAUDE_ARGS" | sed -E 's/^claude( |$)//' | sed -E 's/--resume[[:space:]]+[a-f0-9-]+//g' | sed -E 's/--session-id[[:space:]]+[a-f0-9-]+//g' | xargs)
 
 # Save current options if not empty, or load previously saved options
 OPTS_FILE="$OPTS_DIR/$SESSION_ID"
