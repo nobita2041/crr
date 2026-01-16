@@ -1,0 +1,97 @@
+#!/bin/bash
+# Claude Code restart (HUP-like)
+# Supports: iTerm2
+# Usage: crr (from within Claude Code via !crr, or from shell after Ctrl+C)
+#        crr -v (verbose mode for debugging)
+
+VERBOSE=false
+[[ "$1" == "-v" || "$1" == "--verbose" ]] && VERBOSE=true
+
+log() {
+  $VERBOSE && echo "$@" >&2
+}
+
+err() {
+  echo "Error: $@" >&2
+}
+
+OPTS_DIR="/tmp/claude-opts"
+mkdir -p "$OPTS_DIR"
+
+# Get current iTerm2 TTY
+TTY=$(osascript -e 'tell application "iTerm2" to tell current session of current window to get tty' 2>/dev/null)
+
+if [ -z "$TTY" ]; then
+  err "Could not determine TTY (iTerm2 only)"
+  exit 1
+fi
+
+# Find Claude process on this TTY
+CLAUDE_PID=$(ps -t "$TTY" -o pid,comm 2>/dev/null | grep -E "^[0-9]+\s+claude" | head -1 | awk '{print $1}')
+
+if [ -z "$CLAUDE_PID" ]; then
+  err "No Claude process found on TTY $TTY"
+  exit 1
+fi
+
+# Get current process arguments
+CLAUDE_ARGS=$(ps -p "$CLAUDE_PID" -o args= 2>/dev/null)
+
+# Extract session ID from process arguments (--resume or --session-id)
+SESSION_ID=$(echo "$CLAUDE_ARGS" | grep -oE "(--resume|--session-id)\s+[a-f0-9-]+" | head -1 | awk '{print $2}')
+
+# Fallback to most recently updated session file
+if [ -z "$SESSION_ID" ]; then
+  SESSION_DIR="$HOME/.claude/projects/$(pwd | sed 's|/|-|g')"
+  SESSION_ID=$(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl)
+fi
+
+if [ -z "$SESSION_ID" ]; then
+  err "Could not determine session ID"
+  exit 1
+fi
+
+# Extract options (exclude 'claude', '--resume', '--session-id' and their values)
+CURRENT_OPTS=$(echo "$CLAUDE_ARGS" | sed 's/^claude //' | sed -E 's/--resume[[:space:]]+[a-f0-9-]+//g' | sed -E 's/--session-id[[:space:]]+[a-f0-9-]+//g' | xargs)
+
+# Save current options if not empty, or load previously saved options
+OPTS_FILE="$OPTS_DIR/$SESSION_ID"
+if [ -n "$CURRENT_OPTS" ]; then
+  # Save current options for future restarts
+  echo "$CURRENT_OPTS" > "$OPTS_FILE"
+  RESTART_OPTS="$CURRENT_OPTS"
+elif [ -f "$OPTS_FILE" ]; then
+  # Load previously saved options
+  RESTART_OPTS=$(cat "$OPTS_FILE")
+else
+  RESTART_OPTS=""
+fi
+
+# Build restart command
+if [ -n "$RESTART_OPTS" ]; then
+  RESTART_CMD="claude $RESTART_OPTS --resume $SESSION_ID"
+else
+  RESTART_CMD="claude --resume $SESSION_ID"
+fi
+
+log "Restarting Claude (PID: $CLAUDE_PID)"
+log "  Session: $SESSION_ID"
+log "  Options: ${RESTART_OPTS:-<none>}"
+log "  Command: $RESTART_CMD"
+
+# Background script to kill and restart
+nohup sh -c "
+  # Kill Claude process
+  kill -TERM $CLAUDE_PID 2>/dev/null
+
+  # Wait for process to terminate
+  while kill -0 $CLAUDE_PID 2>/dev/null; do
+    sleep 0.1
+  done
+
+  # Wait for shell prompt
+  sleep 0.3
+
+  # Send resume command to iTerm2
+  osascript -e 'tell application \"iTerm2\" to tell current session of current window to write text \"$RESTART_CMD\"'
+" >/dev/null 2>&1 &
